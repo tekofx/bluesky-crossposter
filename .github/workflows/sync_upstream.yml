@@ -1,3 +1,4 @@
+name: Sync with Upstream Repo
 on:
   schedule:
     - cron:  '0 4 * * 1,4'
