@@ -1,6 +1,7 @@
 version: '3.8'
 services:
   crossposter:
+    image: ghcr.io/tekofx/bluesky-crossposter:latest
     build: .
     environment:
       BSKY_HANDLE:
