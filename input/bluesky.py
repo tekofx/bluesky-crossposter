@@ -2,8 +2,8 @@ from loguru import logger
 from settings.auth import BSKY_HANDLE, BSKY_PASSWORD
 from settings.paths import *
 from settings import settings
-from local.functions import RateLimitedClient, lang_toggle, rate_limit_write
-import arrow
+from local.functions import RateLimitedClient, lang_toggle, rate_limit_write, session_cache_read, session_cache_write, on_session_change
+import arrow, os
 
 date_in_format = 'YYYY-MM-DDTHH:mm:ss'
 
@@ -11,18 +11,30 @@ date_in_format = 'YYYY-MM-DDTHH:mm:ss'
 def bsky_connect():
     try:
         bsky = RateLimitedClient()
-        bsky.login(BSKY_HANDLE, BSKY_PASSWORD)
+        bsky.on_session_change(on_session_change)
+        session = session_cache_read()
+        if session:
+            logger.info("Connecting to Bluesky using saved session.")
+            bsky.login(session_string=session)
+        else:
+            logger.info("Creating new Bluesky session using password and username.")
+            bsky.login(BSKY_HANDLE, BSKY_PASSWORD)
+        session = bsky.export_session_string()
+        session_cache_write(session)
         return bsky
     except Exception as e:
         logger.error(e)
         if e.response.content.error == "RateLimitExceeded":
             ratelimit_reset = e.response.headers["RateLimit-Reset"]
             rate_limit_write(ratelimit_reset)
+        elif e.response.content.error == "ExpiredToken":
+            logger.info("Session expired, removing session file.")
+            os.remove(session_cache_path)
         exit()
 
 # Getting posts from bluesky
 
-def get_posts(timelimit = arrow.utcnow().shift(hours = -1)):
+def get_posts(timelimit = arrow.utcnow().shift(hours = -1), deleted = []):
     bsky = bsky_connect()
     logger.info("Gathering posts")
     posts = {}
@@ -31,9 +43,10 @@ def get_posts(timelimit = arrow.utcnow().shift(hours = -1)):
     visibility = settings.visibility
     for feed_view in profile_feed.feed:
 #        logger.debug(feed_view)
-        # If the post was not written by the account that posted it, it is a repost and we skip it.
+        # If the post was not written by the account that posted it, it is a repost from another account and we skip it.
         if feed_view.post.author.handle != BSKY_HANDLE:
             continue
+        # Checking if the post has "indexe_at" set, meaning it is a repost.
         repost = False
         created_at = arrow.get(feed_view.post.record.created_at.split(".")[0], date_in_format)
         if hasattr(feed_view.reason, "indexed_at"):
@@ -48,9 +61,11 @@ def get_posts(timelimit = arrow.utcnow().shift(hours = -1)):
         twitter_post = (lang_toggle(langs, "twitter") and settings.Twitter)
         if not mastodon_post and not twitter_post:
             continue
-        # If post has an embed of type record it is a quote post, and should not be crossposted
         cid = feed_view.post.cid
         text = feed_view.post.record.text
+        # Checking if there are any posts in the cache that are no longer in the timeline, meaning they have been deleted.
+        if cid in deleted:
+            deleted.remove(cid)
         # Facets contains things like urls and mentions, which we need to deal with.
         # send_mention is used to keep track of if the mention-settings says for the post to be posted or not.
         # Default is True, because if nobody is mentioned it should be posted.
@@ -104,11 +119,11 @@ def get_posts(timelimit = arrow.utcnow().shift(hours = -1)):
             try:
                 reply_to_user = feed_view.reply.parent.author.handle
             except:
-                reply_to_user = get_reply_to_user(feed_view.post.record.reply.parent, bsky)
+                reply_to_user = bsky.get_reply_to_user(feed_view.post.record.reply.parent)
         # If unable to fetch user that was replied to, code will skip this post. If the post was not a 
         # reply at all, the reply_to_user will still be set to the user account.
         if not reply_to_user:
-            logger.error("Unable to find the user that post " + cid + " replies to or quotes")
+            logger.info("Unable to find the user that post " + cid + " replies to or quotes")
             continue
         # Checking if post is withing timelimit and not a reply to someone elses post.
         if created_at > timelimit and reply_to_user == BSKY_HANDLE:
@@ -159,21 +174,7 @@ def get_posts(timelimit = arrow.utcnow().shift(hours = -1)):
             logger.debug(post_info)
             # Saving post to posts dictionary
             posts[cid] = post_info;
-    return posts
-
-# Function for getting username of person replied to. It can mostly be retrieved from the reply section of the tweet that has been fetched,
-# but in cases where the original post in a thread has been deleted it causes some weirdness. Hopefully this resolves it.
-def get_reply_to_user(reply, bsky):
-    uri = reply.uri
-    username = ""
-    try: 
-        response = bsky.app.bsky.feed.get_post_thread(params={"uri": uri})
-        username = response.thread.post.author.handle
-    except Exception as e:
-        logger.error("Unable to retrieve reply_to-user of post.")
-        logger.error(e)
-    return username
-
+    return posts, deleted
 
 def get_allowed_reply(post):
         reply_restriction = post.threadgate

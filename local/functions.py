@@ -1,10 +1,19 @@
-from atproto import Client
+from atproto import Client, Session, SessionEvent
 from loguru import logger
 from settings.auth import *
 from settings.paths import *
 from local.functions import *
 from settings import settings
-import  os, shutil, re, arrow
+import  os, shutil, re, arrow, sys
+
+
+# Setting up logging
+logger.remove()
+log_format = "<yellow>{time:YYYY-MM-DD HH:mm:ss}</yellow> <lvl>[{level}]: {message}</lvl> <yellow>({function} {file}:{line})</yellow>"
+logger.add(sys.stdout, format=log_format)
+logger.add("%s/kamrat_{time:YYMMDD}.log" % log_path,
+        format=log_format, 
+        rotation="00:00", retention="1 week")
 
 # A wrapper class for the atproto client that allows us to get ratelimit info
 class RateLimitedClient(Client):
@@ -31,6 +40,35 @@ class RateLimitedClient(Client):
             logger.info("Bluesky rate limit has %s out of %s remaining." % (self._remaining, self._limit))
 
         return self.response
+    
+    def get_reply_to_user(self, reply):
+        uri = reply.uri
+        username = ""
+        try: 
+            response = self.app.bsky.feed.get_post_thread(params={"uri": uri})
+            username = response.thread.post.author.handle
+        except Exception as e:
+            logger.info("Unable to retrieve reply_to-user of post. Probably a reply to a deleted post.")
+        return username
+
+def on_session_change(event: SessionEvent, session: Session) -> None:
+    print('Session changed:', event, repr(session))
+    if event in (SessionEvent.CREATE, SessionEvent.REFRESH):
+        print('Saving changed session')
+        session_cache_write(session.export())
+
+def session_cache_read():
+    logger.info("Reading session cache")
+    if not os.path.exists(session_cache_path):
+        logger.info(session_cache_path + " not found.")
+        return None
+    with open(session_cache_path, 'r') as file:
+        return file.read()
+
+def session_cache_write(session):
+    logger.info("Saving session cache")
+    with open(session_cache_path, "w") as file:
+        file.write(session)
 
 
 # Functions for checking and saving ratelimit-reset
@@ -115,17 +153,21 @@ def post_cache_read():
         for line in file:
             try:
                 post_id = line.split(";")[0]
-                timestamp = int(line.split(".")[1])
+                timestamp = int(line.split(";")[1].split(".")[0])
                 timestamp = arrow.Arrow.fromtimestamp(timestamp)
             except Exception as e:
                 logger.error(e)
                 continue
             if timestamp > timelimit:
                 cache[post_id] = timestamp
-    return cache;
+    return cache
 
 def post_cache_write(cache):
     logger.info("Saving post cache.")
+    if not cache and os.path.exists(post_cache_path):
+        os.remove(post_cache_path)
+        logger.info("Cache empty, nothing saved.")
+        return
     append_write = "w"
     for post_id in cache:
         timestamp = str(cache[post_id].timestamp())
