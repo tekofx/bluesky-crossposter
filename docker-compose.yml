@@ -1,34 +1,10 @@
-version: '3.8'
+version: "3.8"
 services:
   crossposter:
     build: .
+    container_name: bluesky-crossposter
     restart: always
-    environment:
-      BSKY_HANDLE:
-      BSKY_PASSWORD:
-      MASTODON_HANDLE:
-      MASTODON_INSTANCE:
-      MASTODON_TOKEN:
-      TWITTER_APP_KEY:
-      TWITTER_APP_SECRET:
-      TWITTER_ACCESS_TOKEN:
-      TWITTER_ACCESS_TOKEN_SECRET:
-      # defaults to true, change to false if you don't want to enable it
-      TWITTER_CROSSPOSTING: ${TWITTER_CROSSPOSTING:-true}
-      MASTODON_CROSSPOSTING: ${MASTODON_CROSSPOSTING:-true}
-      LOG_LEVEL:
-      MASTODON_VISIBILITY:
-      MENTIONS:
-      POST_DEFAULT:
-      MASTODON_LANG:
-      TWITTER_LANG:
-      QUOTE_POSTS:
-      MAX_RETRIES:
-      POST_TIME_LIMIT:
-      MAX_PER_HOUR:
-      OVERFLOW_POST:
-      # job interval, defaults to 1 hour(the max lag between bluesky and twitter/mastodon)
-      RUN_INTERVAL: ${RUN_INTERVAL:-3600}
+    env_file: .env
     volumes:
       - ./dbhost:/db
       - ./backup:/backup
